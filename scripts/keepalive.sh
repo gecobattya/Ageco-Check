@@ -48,6 +48,9 @@ mv "$TMP_FILE" "$SETTINGS_FILE"
 
 # --- Run health check ---
 EXTRA_FLAGS=()
+if [[ "$MODEL" == *"[1m]" ]]; then
+    EXTRA_FLAGS+=(--betas context-1m-2025-08-07)
+fi
 if [ "${CI:-}" = "true" ]; then
     EXTRA_FLAGS+=(--dangerously-skip-permissions)
 fi
