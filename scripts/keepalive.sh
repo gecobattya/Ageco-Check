@@ -1,96 +1,49 @@
-#!/usr/bin/env bash
-# keepalive.sh - Health-check a single Anyrouter token using Claude CLI
-# Usage: keepalive.sh <token> [base_url] [model]
-# Prints ALL output (including errors, retries, stack traces) for diagnostics.
-set -euo pipefail
+name: Anyrouter Keepalive
 
-TOKEN="${1:?Usage: $0 <token> [base_url] [model]}"
-BASE_URL="${2:-https://anyrouter.top}"
-MODEL="${3:-claude-opus-5-5[1m]}"
+on:
+  schedule:
+    # UTC 01:00 = runs 01:00-07:00 UTC, last round ~06:20 UTC
+    # CEST 03:00-09:20 → warm until ~10:10 — covers the whole morning
+    # CET  02:00-08:20 → warm until ~09:10 — covers the whole morning
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'API Base URL'
+        required: false
+        default: 'https://anyrouter.top'
+      model:
+        description: 'Claude model for health checks'
+        required: false
+        default: 'claude-opus-5-5[1m]'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROMPTS_FILE="$SCRIPT_DIR/prompts.txt"
+# Prevent concurrent runs stacking up
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
 
-# Pick a random non-empty, non-comment prompt line
-pick_prompt() {
-    if [ -f "$PROMPTS_FILE" ]; then
-        local prompts=()
-        while IFS= read -r line; do
-            [[ -z "$line" || "$line" == \#* ]] && continue
-            prompts+=("$line")
-        done < "$PROMPTS_FILE"
-        if [ ${#prompts[@]} -gt 0 ]; then
-            echo "${prompts[$((RANDOM % ${#prompts[@]}))]}"
-            return
-        fi
-    fi
-    echo "Write a one-line Python function to check if a string is a palindrome."
-}
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6h max, our script self-terminates at ~5h58m
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-PROMPT=$(pick_prompt)
+      - name: Install Claude Code CLI
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.289
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-# --- Atomically write settings.json ---
-SETTINGS_DIR="$HOME/.claude"
-SETTINGS_FILE="$SETTINGS_DIR/settings.json"
-TMP_FILE="$SETTINGS_DIR/settings.json.tmp.$$.$(date +%s%N)"
+      - name: Verify Claude CLI
+        run: claude --version
 
-mkdir -p "$SETTINGS_DIR"
-
-cat > "$TMP_FILE" << EOF
-{
-  "env": {
-    "ANTHROPIC_AUTH_TOKEN": "$TOKEN",
-    "ANTHROPIC_BASE_URL": "$BASE_URL"
-  }
-}
-EOF
-mv "$TMP_FILE" "$SETTINGS_FILE"
-
-# --- Run health check ---
-EXTRA_FLAGS=()
-
-if [ "${CI:-}" = "true" ]; then
-    EXTRA_FLAGS+=(--dangerously-skip-permissions)
-fi
-
-# Run claude with timeout to prevent infinite retry hangs.
-# Capture both stdout and stderr into a temp file, plus record exit code.
-OUTPUT_FILE=$(mktemp)
-EXIT_CODE=0
-
-# 120s timeout: if claude enters infinite retry, kill it
-timeout 120 claude -p "$PROMPT" --print --model "$MODEL" --bare "${EXTRA_FLAGS[@]}" > "$OUTPUT_FILE" 2>&1 || EXIT_CODE=$?
-
-# --- Print ALL output for diagnostics ---
-echo "  Prompt: ${PROMPT:0:60}..."
-echo "  --- Claude output (exit_code=$EXIT_CODE) ---"
-cat "$OUTPUT_FILE" | sed 's/^/    /'
-echo "  --- End output ---"
-
-# --- Evaluate result ---
-OUTPUT_CONTENT=$(cat "$OUTPUT_FILE" 2>/dev/null || true)
-
-# Clean up
-rm -f "$OUTPUT_FILE" "$SETTINGS_FILE"
-
-# 1. Non-zero exit code is a clear failure (includes timeout exit 124)
-if [ "$EXIT_CODE" -ne 0 ]; then
-    echo "  FAILED (non-zero exit: $EXIT_CODE)"
-    exit 1
-fi
-
-# 2. Empty response is a failure
-if [ -z "$OUTPUT_CONTENT" ]; then
-    echo "  FAILED (empty response)"
-    exit 1
-fi
-
-# # 3. Check for common API error indicators that might appear even with exit 0
-# ERROR_PATTERNS="rate limit|authentication failed|unauthorized|invalid api key|connection refused|timeout|429|401|403|500|service unavailable|retry after|too many requests"
-# if echo "$OUTPUT_CONTENT" | grep -qiE "$ERROR_PATTERNS"; then
-#     echo "  FAILED (API error detected in output)"
-#     exit 1
-# fi
-
-echo "  SUCCESS"
-exit 0
+      - name: Run keepalive for all tokens
+        env:
+          ANYROUTER_TOKENS: ${{ secrets.ANYROUTER_TOKENS }}
+          BASE_URL: ${{ github.event.inputs.base_url || 'https://anyrouter.top' }}
+          MODEL: ${{ github.event.inputs.model || 'claude-opus-5-5[1m]' }}
+          QQ_EMAIL: ${{ secrets.QQ_EMAIL }}
+          QQ_SMTP_AUTH_CODE: ${{ secrets.QQ_SMTP_AUTH_CODE }}
+          CI: "true"
+        run: bash scripts/run-all.sh
