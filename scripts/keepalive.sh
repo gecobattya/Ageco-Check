@@ -6,7 +6,7 @@ set -euo pipefail
 
 TOKEN="${1:?Usage: $0 <token> [base_url] [model]}"
 BASE_URL="${2:-https://anyrouter.top}"
-MODEL="${3:-claude-opus-4-8[1m]}"
+MODEL="${3:-claude-opus-5-5[1m]}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPTS_FILE="$SCRIPT_DIR/prompts.txt"
@@ -48,9 +48,7 @@ mv "$TMP_FILE" "$SETTINGS_FILE"
 
 # --- Run health check ---
 EXTRA_FLAGS=()
-if [[ "$MODEL" == *"[1m]" ]]; then
-    EXTRA_FLAGS+=(--betas context-1m-2025-08-07)
-fi
+
 if [ "${CI:-}" = "true" ]; then
     EXTRA_FLAGS+=(--dangerously-skip-permissions)
 fi
